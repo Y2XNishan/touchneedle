@@ -1467,16 +1467,38 @@ def ref_label(r: Reference) -> str:
     return f"{prefix}{r.name} ({r.year}{r.suffix})"
 
 
+@dataclasses.dataclass
+class CrossReferenceFindings:
+    uncited: list[Reference]
+    unresolved: list[Citation]
+    ambiguous: list[str]
+
+    @property
+    def needs_attention(self) -> bool:
+        # Unresolved citations have known false positives and do not gate CI.
+        return bool(self.uncited or self.ambiguous)
+
+
+def cross_reference_findings(refs: list[Reference],
+                             cites: list[Citation]) -> CrossReferenceFindings:
+    return CrossReferenceFindings(
+        uncited=[r for r in refs if not r.cited_by],
+        unresolved=[c for c in cites if not c.key],
+        ambiguous=ambiguous_suffixes(refs, cites),
+    )
+
+
 def build_report(refs: list[Reference], cites: list[Citation], doc: str,
                  offline: bool, style: str = "", forced: bool = False,
-                 polite: bool = False) -> str:
+                 polite: bool = False,
+                 findings: CrossReferenceFindings | None = None) -> str:
     counts: dict[str, int] = {}
     for r in refs:
         counts[r.status] = counts.get(r.status, 0) + 1
 
-    uncited = [r for r in refs if not r.cited_by]
-    unresolved = [c for c in cites if not c.key]
-    ambiguous = ambiguous_suffixes(refs, cites)
+    if findings is None:
+        findings = cross_reference_findings(refs, cites)
+    uncited, unresolved, ambiguous = findings.uncited, findings.unresolved, findings.ambiguous
 
     L = [f"# Citation check \u2014 {os.path.basename(doc)}", "",
          f"Run {time.strftime('%Y-%m-%d %H:%M')}"
@@ -1710,6 +1732,7 @@ def main() -> int:
 
     args = ap.parse_args()
     refs, cites, style = collect(args.doc, args.style)
+    findings: CrossReferenceFindings | None = None
 
     if args.cmd == "claims":
         out = build_claims(refs, cites, args.doc)
@@ -1727,8 +1750,10 @@ def main() -> int:
                     future.result()
                     print(f"    [{i}/{len(refs)}] {r.status}",
                           file=sys.stderr, flush=True)
+        findings = cross_reference_findings(refs, cites)
         out = build_report(refs, cites, args.doc, args.offline, style,
-                           args.style != "auto", polite=bool(args.mailto))
+                           args.style != "auto", polite=bool(args.mailto),
+                           findings=findings)
         if args.json_out:
             with open(args.json_out, "w", encoding="utf-8") as fh:
                 json.dump({"style": style,
@@ -1743,8 +1768,10 @@ def main() -> int:
     else:
         print(out)
 
-    if args.cmd == "check":
-        return 2 if any(r.status in PROBLEM_STATUSES for r in refs) else 0
+    if args.cmd == "check" and findings is not None and (
+        findings.needs_attention or any(r.status in PROBLEM_STATUSES for r in refs)
+    ):
+        return 2
     return 0
 
 

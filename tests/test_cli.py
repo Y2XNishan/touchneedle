@@ -79,8 +79,8 @@ class TestCheckCommand(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def test_a_clean_offline_run_exits_zero(self):
-        self.assertEqual(self.proc.returncode, 0, self.proc.stderr)
+    def test_an_offline_run_with_an_uncited_entry_exits_two(self):
+        self.assertEqual(self.proc.returncode, 2, self.proc.stderr)
 
     def test_the_report_names_the_document_and_the_totals(self):
         self.assertIn("# Citation check — sample.md", self.report)
@@ -126,7 +126,7 @@ class TestStyleOverride(unittest.TestCase):
                        "--out", out, "--cache", os.path.join(tmp, "cache"))
             with open(out, encoding="utf-8") as fh:
                 report = fh.read()
-        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.returncode, 2, proc.stderr)
         self.assertIn("Style: author-date (forced)", report)
 
     def test_an_unknown_style_is_rejected_before_any_work(self):
@@ -145,7 +145,7 @@ class TestNumericDocument(unittest.TestCase):
                        "--cache", os.path.join(tmp, "cache"))
             with open(out, encoding="utf-8") as fh:
                 report = fh.read()
-        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.returncode, 2, proc.stderr)
         self.assertIn("10 reference entries, 17 in-text citation instances.", report)
         self.assertIn("Style: numeric (detected)", report)
 
@@ -181,7 +181,7 @@ class TestChicagoAuthorDateDocument(unittest.TestCase):
                        "--cache", os.path.join(tmp, "cache"))
             with open(out, encoding="utf-8") as fh:
                 report = fh.read()
-        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.returncode, 2, proc.stderr)
         self.assertIn("7 reference entries, 8 in-text citation instances.", report)
         self.assertIn("Style: author-date (detected)", report)
 
@@ -197,7 +197,7 @@ class TestMlaDocument(unittest.TestCase):
                        "--cache", os.path.join(tmp, "cache"))
             with open(out, encoding="utf-8") as fh:
                 report = fh.read()
-        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.returncode, 2, proc.stderr)
         self.assertIn("6 reference entries, 7 in-text citation instances.", report)
         self.assertIn("Style: mla (detected)", report)
 
@@ -224,7 +224,7 @@ class TestNotesDocument(unittest.TestCase):
                        "--cache", os.path.join(tmp, "cache"))
             with open(out, encoding="utf-8") as fh:
                 report = fh.read()
-        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.returncode, 2, proc.stderr)
         self.assertIn("5 reference entries, 6 in-text citation instances.", report)
         self.assertIn("Style: notes (detected)", report)
 
@@ -282,6 +282,71 @@ class TestClaimsCommand(unittest.TestCase):
 
 
 class TestExitCodes(unittest.TestCase):
+    REFERENCE = "Smith, J. (2020) 'A paper about things', Journal of Things."
+    SECOND = "Jones, A. (2021) 'Another paper about things', Journal of Things."
+    UNCITED = "Brown, B. (2022) 'A third paper about things', Journal of Things."
+    REFERENCES = f"{REFERENCE}\n\n{SECOND}\n\n{UNCITED}"
+    CITED_BODY = "The sources (Smith, 2020), (Jones, 2021), and (Brown, 2022) agree."
+
+    def check_document(self, body, references):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "paper.md")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(f"# Paper\n\n{body}\n\n## References\n\n{references}\n")
+            return run("check", path, "--offline", "--cache", os.path.join(tmp, "cache"))
+
+    def test_uncited_reference_exits_two_offline(self):
+        proc = self.check_document(
+            "The sources (Smith, 2020) and (Jones, 2021) support this.",
+            self.REFERENCES,
+        )
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("Brown (2022)", proc.stdout)
+
+    def test_ambiguous_suffix_exits_two_without_uncited_references(self):
+        proc = self.check_document(
+            "The drafts (IETF, 2025a) and (IETF, 2025b) differ. "
+            "The overview (IETF, 2025) does not say which. "
+            "The comparison (Smith, 2020) agrees.",
+            "IETF (2025a) 'The OAuth 2.1 Framework', Internet-Draft.\n\n"
+            "IETF (2025b) 'OAuth Security Topics', Internet-Draft.\n\n"
+            "Smith, J. (2020) 'A paper about things', Journal of Things.",
+        )
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("cited without a suffix", proc.stdout)
+        uncited = proc.stdout.split("### Reference-list entries never cited in the text")[1]
+        self.assertIn("_None._", uncited.split("###")[0])
+
+    def test_unresolved_citation_alone_does_not_fail(self):
+        proc = self.check_document(
+            f"{self.CITED_BODY} (Missing, 2019) has no entry.",
+            self.REFERENCES,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("`Missing (2019)`", proc.stdout)
+
+    def test_valid_document_exits_zero(self):
+        proc = self.check_document(self.CITED_BODY, self.REFERENCES)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("### Reference-list entries never cited in the text\n\n_None._", proc.stdout)
+
+    def test_verified_references_still_fail_for_an_uncited_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "paper.md")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("# Paper\n\nThe sources (Smith, 2020) and (Jones, 2021) "
+                         f"support this.\n\n## References\n\n{self.REFERENCES}\n")
+
+            def fake_verify(ref, fetcher):
+                ref.status = "VERIFIED"
+
+            argv = ["touchneedle.py", "check", path, "--cache", os.path.join(tmp, "cache")]
+            with mock.patch.object(cc, "verify", fake_verify), \
+                 mock.patch.object(sys, "argv", argv), \
+                 contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(cc.main(), 2)
+
     def test_a_problem_status_exits_two_so_it_can_gate_ci(self):
         def fake_verify(ref, fetcher):
             ref.status = "MISMATCH"
@@ -301,6 +366,8 @@ class TestExitCodes(unittest.TestCase):
             cc.parse_entry("First, A. (2020) 'First paper', Journal of Things."),
             cc.parse_entry("Second, B. (2021) 'Second paper', Journal of Things."),
         ]
+        for ref in refs:
+            ref.cited_by.append("cited in test document")
         met = threading.Barrier(2)
         second_done = threading.Event()
         completed = []
@@ -364,7 +431,7 @@ class TestALegacyCodePageDoesNotCrashARun(unittest.TestCase):
 
     def test_a_report_survives_an_ascii_stdout(self):
         proc = run("check", SAMPLE, "--offline", env=ASCII_LOCALE)
-        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.returncode, 2, proc.stderr)
 
     def test_the_claims_worklist_survives_an_ascii_stdout(self):
         proc = run("claims", SAMPLE, env=ASCII_LOCALE)

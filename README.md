@@ -188,8 +188,10 @@ host remain spaced by the politeness delay, while different authorities can be
 checked in parallel; progress output and report rows remain in bibliography
 order.
 
-`check` exits 2 when something needs attention and 0 when clean. `claims` always
-exits 0 — it asks a question rather than answering one.
+`check` exits 2 for failed verification, uncited references, or ambiguous year
+suffixes, and 0 otherwise. Unresolved in-text citations alone do not fail the
+run because that list has known false positives. `claims` always exits 0 — it
+asks a question rather than answering one.
 
 ## Statuses
 

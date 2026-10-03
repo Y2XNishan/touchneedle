@@ -59,8 +59,11 @@ jobs:
         # broken `claims` sail through on Windows.
         shell: bash
         run: |
+          # The sample deliberately contains an uncited entry, so check exits 2.
+          status=0
           python scripts/touchneedle.py check tests/fixtures/sample.md \
-            --offline --out "$RUNNER_TEMP/report.md" --json "$RUNNER_TEMP/data.json"
+            --offline --out "$RUNNER_TEMP/report.md" --json "$RUNNER_TEMP/data.json" || status=$?
+          test "$status" -eq 2
           python scripts/touchneedle.py claims tests/fixtures/sample.md \
             --out "$RUNNER_TEMP/claims.md"
           python -c "import os, pathlib; assert '8 reference entries' in pathlib.Path(os.environ['RUNNER_TEMP'], 'report.md').read_text(encoding='utf-8')"
@@ -109,8 +112,10 @@ jobs:
       # useful if that path resolves inside the plugin layout.
       - name: The bundled copy runs
         run: |
+          status=0
           python3 plugins/touchneedle/skills/touchneedle/scripts/touchneedle.py \
-            check tests/fixtures/sample.md --offline > /dev/null
+            check tests/fixtures/sample.md --offline > /dev/null || status=$?
+          test "$status" -eq 2
 
   # pyproject wires four things together -- py-modules, package-dir, the dynamic
   # version read from __version__, and the console entry point -- so that
